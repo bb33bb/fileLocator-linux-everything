@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 import os
 import time
 import threading
@@ -13,11 +14,15 @@ class Application(tk.Tk):
         super().__init__()
         self.title("File Searcher")
 
+        # Global variable to track if the menu is shown
+        self.menu_shown = False
+
         # Create widgets
         self.entry = tk.Entry(self)
+        self.entry.bind("<FocusIn>", self.focus_in)  # Bind FocusIn event to focus_in function
         self.button = tk.Button(self, text="Search", command=self.search)
         self.update_button = tk.Button(self, text="Update Index", command=self.update_index)
-        self.tree = ttk.Treeview(self, columns=("filename", "path", "time"), show="headings")
+        self.tree = ttk.Treeview(self, columns=("filename", "path", "time"), show="headings", selectmode='extended')
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
 
         # Configure treeview
@@ -33,6 +38,7 @@ class Application(tk.Tk):
         self.menu = Menu(self, tearoff=0)
         self.menu.add_command(label="Open Directory", command=self.open_directory)
         self.menu.add_command(label="Open File", command=self.open_file)
+        self.menu.add_command(label="Delete", command=self.delete_selected)
         self.tree.bind("<Button-3>", self.show_menu)
 
         # Bind Return key to search function
@@ -52,21 +58,27 @@ class Application(tk.Tk):
         # Create progress bar
         self.progress = ttk.Progressbar(self, mode='indeterminate')
 
+        # Set focus to the entry widget
+        self.entry.focus_set()
+
     def search(self, event=None):
+        # Release the input focus
+        if self.menu_shown:
+            self.menu.unpost()
+            self.menu_shown = False
         # Clear old results
         for i in self.tree.get_children():
             self.tree.delete(i)
-
         # Get the filename from the entry
         filename = self.entry.get()
-
-        # Call locate command
-        process = Popen(['locate', '-b', filename], stdout=PIPE, stderr=PIPE)
+        # Split the filename into keywords
+        keywords = filename.split()
+        # Call locate command for the first keyword
+        process = Popen(['locate', '-b', keywords[0]], stdout=PIPE, stderr=PIPE)
         stdout, stderr = process.communicate()
-
-        # Insert each result into the treeview
+        # Filter the results with the rest keywords
         for line in stdout.decode().split("\n"):
-            if line and os.path.exists(line):
+            if line and os.path.exists(line) and all(keyword in line for keyword in keywords[1:]):
                 timestamp = os.path.getmtime(line)
                 readable_time = time.ctime(timestamp)
                 self.tree.insert("", "end", values=(line.split("/")[-1], line, readable_time))
@@ -74,11 +86,9 @@ class Application(tk.Tk):
     def update_index(self):
         password = tkinter.simpledialog.askstring("Password", "Enter password:", show='*')
         command = ['sudo', '-S', 'updatedb']
-
         # Start the progress bar
         self.progress.start()
         self.progress.grid(row=3, column=0, columnspan=2, sticky='ew')
-
         # Start a new thread to run updatedb
         threading.Thread(target=self.run_updatedb, args=(command, password), daemon=True).start()
 
@@ -90,7 +100,6 @@ class Application(tk.Tk):
             tkinter.messagebox.showerror("Error", "Failed to update index. Error: " + stderr.decode())
         else:
             tkinter.messagebox.showinfo("Success", "Index updated successfully.")
-
         # Stop the progress bar
         self.progress.stop()
         self.progress.grid_forget()
@@ -101,16 +110,18 @@ class Application(tk.Tk):
         data.sort(reverse=descending)
         for indx, item in enumerate(data):
             self.tree.move(item[1], '', indx)
-
         # Switch the heading so that it will sort in the opposite direction
         self.tree.heading(col, command=lambda col=col: self.sort_by(col, int(not descending)))
 
     def show_menu(self, event):
         # Select row under mouse
-        self.tree.selection_set(self.tree.identify_row(event.y))
+        item = self.tree.identify_row(event.y)
+        if item not in self.tree.selection():
+            self.tree.selection_set(item)
         # Show right click context menu
         self.menu.post(event.x_root, event.y_root)
-
+        # Set the global variable to True
+        self.menu_shown = True
 
     def open_directory(self):
         # Get selected item
@@ -141,6 +152,44 @@ class Application(tk.Tk):
         else:
             tkinter.messagebox.showinfo("No selection", "Please select an item first.")
 
+    # def delete_selected(self):
+    #     # Get selected items
+    #     selected_items = self.tree.selection()
+    #     if len(selected_items) > 0:
+    #         for item in selected_items:
+    #             self.tree.delete(item)
+    #     else:
+    #         tkinter.messagebox.showinfo("No selection", "Please select an item first.")
+    def delete_selected(self):
+        # Get selected items
+        selected_items = self.tree.selection()
+        if len(selected_items) > 0:
+            # Show a confirmation dialog
+            if not tkinter.messagebox.askyesno("Confirm deletion", "Are you sure you want to delete the selected files?"):
+                return
+            for item in selected_items:
+                # Get file path
+                path = self.tree.item(item)['values'][1]
+                # Delete the file
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                    elif os.path.isdir(path):
+                        os.rmdir(path)  # This will only remove empty directories
+                    # Remove the item from the treeview
+                    self.tree.delete(item)
+                except OSError as e:
+                    tkinter.messagebox.showerror("Error", "Failed to delete file: " + str(e))
+        else:
+            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
+
+    def focus_in(self, event):
+        # Check the global variable
+        if self.menu_shown:
+            # Unpost the menu
+            self.menu.unpost()
+            # Set the global variable to False
+            self.menu_shown = False
 
 if __name__ == "__main__":
     app = Application()
