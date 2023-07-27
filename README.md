@@ -6,3 +6,6 @@ gui of locate command
 all of the code are written by gpt4
 
 and it is convient to search files , although not as well as everything ,but may be almost the most convient tool for users with everyday linux
+
+
+借助locate命令，实现Linux下几乎即时搜索的效果。
