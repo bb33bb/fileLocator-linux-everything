@@ -12,11 +12,12 @@ import subprocess
 class Application(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("File Searcher")
-
+        self.title("FileLocator")
+        self.sort_directions = {"filename": False, "path": False, "time": False}
         # Global variable to track if the menu is shown
         self.menu_shown = False
-
+        # Add a boolean to track if a search is ongoing
+        self.searching = False
         # Create widgets
         self.entry = tk.Entry(self)
         self.entry.bind("<FocusIn>", self.focus_in)  # Bind FocusIn event to focus_in function
@@ -36,6 +37,7 @@ class Application(tk.Tk):
 
         # Create right click context menu
         self.menu = Menu(self, tearoff=0)
+        self.menu.bind("<FocusOut>", lambda _: self.menu.unpost())
         self.menu.add_command(label="Open Directory", command=self.open_directory)
         self.menu.add_command(label="Open File", command=self.open_file)
         self.menu.add_command(label="Delete", command=self.delete_selected)
@@ -66,6 +68,13 @@ class Application(tk.Tk):
         if self.menu_shown:
             self.menu.unpost()
             self.menu_shown = False
+        # Disable the button and set the searching boolean to True
+        self.button.config(state='disabled')
+        self.searching = True
+        # Start a new thread to search
+        threading.Thread(target=self.do_search, daemon=True).start()
+
+    def do_search(self):
         # Clear old results
         for i in self.tree.get_children():
             self.tree.delete(i)
@@ -82,6 +91,9 @@ class Application(tk.Tk):
                 timestamp = os.path.getmtime(line)
                 readable_time = time.ctime(timestamp)
                 self.tree.insert("", "end", values=(line.split("/")[-1], line, readable_time))
+        # When the search is done, re-enable the button and set the searching boolean to False
+        self.after(0, lambda: self.button.config(state='normal'))
+        self.searching = False
 
     def update_index(self):
         password = tkinter.simpledialog.askstring("Password", "Enter password:", show='*')
@@ -105,6 +117,11 @@ class Application(tk.Tk):
         self.progress.grid_forget()
 
     def sort_by(self, col, descending):
+        # Remove the arrow from all columns
+        for col_name in self.sort_directions.keys():
+            col_heading = self.tree.heading(col_name, option="text")
+            self.tree.heading(col_name, text=col_heading.replace(" ↑", "").replace(" ↓", ""))
+            
         # Sort the treeview by the given column
         data = [(self.tree.set(child, col), child) for child in self.tree.get_children('')]
         data.sort(reverse=descending)
@@ -112,6 +129,13 @@ class Application(tk.Tk):
             self.tree.move(item[1], '', indx)
         # Switch the heading so that it will sort in the opposite direction
         self.tree.heading(col, command=lambda col=col: self.sort_by(col, int(not descending)))
+        # Add the arrow to the sorted column
+        col_heading = self.tree.heading(col, option="text")
+        if descending:
+            self.tree.heading(col, text=col_heading + " ↓")
+        else:
+            self.tree.heading(col, text=col_heading + " ↑")
+        self.sort_directions[col] = descending
 
     def show_menu(self, event):
         # Select row under mouse
@@ -120,6 +144,8 @@ class Application(tk.Tk):
             self.tree.selection_set(item)
         # Show right click context menu
         self.menu.post(event.x_root, event.y_root)
+        # Set the focus to the menu
+        self.menu.focus_set()
         # Set the global variable to True
         self.menu_shown = True
 
@@ -148,18 +174,10 @@ class Application(tk.Tk):
             # Get file path
             path = self.tree.item(item)['values'][1]
             # Open the file
-            subprocess.run(['nautilus', '--select', path])
+            subprocess.run(['xdg-open', path])
         else:
             tkinter.messagebox.showinfo("No selection", "Please select an item first.")
 
-    # def delete_selected(self):
-    #     # Get selected items
-    #     selected_items = self.tree.selection()
-    #     if len(selected_items) > 0:
-    #         for item in selected_items:
-    #             self.tree.delete(item)
-    #     else:
-    #         tkinter.messagebox.showinfo("No selection", "Please select an item first.")
     def delete_selected(self):
         # Get selected items
         selected_items = self.tree.selection()
