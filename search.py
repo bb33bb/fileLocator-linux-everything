@@ -5,9 +5,16 @@ import threading
 import tkinter as tk
 import tkinter.messagebox
 import tkinter.simpledialog
+import tkinter.font as tkFont
 from tkinter import ttk, Menu
 from subprocess import Popen, PIPE
 import subprocess
+
+def pixels_to_chars(pixels):
+    # This is an estimate of the width of a single character.
+    # You may need to adjust this value for your specific font and size.
+    average_char_width = 10
+    return pixels // average_char_width
 
 class Application(tk.Tk):
     def __init__(self):
@@ -21,8 +28,17 @@ class Application(tk.Tk):
         # Create widgets
         self.entry = tk.Entry(self)
         self.entry.bind("<FocusIn>", self.focus_in)  # Bind FocusIn event to focus_in function
-        self.button = tk.Button(self, text="Search", command=self.search)
-        self.update_button = tk.Button(self, text="Update Index", command=self.update_index)
+        
+        # Define a font
+        self.font = tkFont.Font(family="Helvetica", size=10)
+        # Measure the width of the button text and convert it to characters
+        search_button_width = pixels_to_chars(self.font.measure("Search"))
+        update_index_button_width = pixels_to_chars(self.font.measure("Update Index"))
+        # Create the buttons with the measured width
+        print(search_button_width)
+        self.button = tk.Button(self, text="Search", command=self.search, width=search_button_width)
+        print(update_index_button_width)
+        self.update_button = tk.Button(self, text="Update Index", command=self.update_index, width=update_index_button_width)
         self.tree = ttk.Treeview(self, columns=("filename", "path", "time"), show="headings", selectmode='extended')
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
 
@@ -47,16 +63,21 @@ class Application(tk.Tk):
         self.entry.bind("<Return>", self.search)
 
         # Layout
-        self.entry.grid(row=0, column=0, columnspan=2, sticky='ew')
-        self.button.grid(row=1, column=0)
-        self.update_button.grid(row=1, column=1)
-        self.tree.grid(row=2, column=0, columnspan=2, sticky='nsew')
-        self.scrollbar.grid(row=2, column=2, sticky='ns')
+        self.entry.grid(row=0, column=0, sticky='ew', ipadx=4, padx=(0, 2))
+        self.button.grid(row=0, column=1, sticky='ew', ipadx=4, padx=(2, 2))
+        self.update_button.grid(row=0, column=2, sticky='ew', ipadx=4, padx=(2, 0))
+        self.tree.grid(row=1, column=0, columnspan=3, sticky='nsew', padx=0, pady=0)
+        self.scrollbar.grid(row=1, column=4, sticky='ns', padx=0)
 
         # Configure column weights for resizing
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_columnconfigure(0, weight=1)  # Give the Entry widget's column a weight
+        self.grid_columnconfigure(1, weight=0)  # Set the button's column weight to 0
+        self.grid_columnconfigure(2, weight=0)  # Set the update_button's column weight to 0
+        self.grid_columnconfigure(4, weight=0)  # Set the scrollbar's column weight to 0
+        self.grid_rowconfigure(1, weight=1)  # Give the Treeview widget's row a weight
+
+
+
         # Create progress bar
         self.progress = ttk.Progressbar(self, mode='indeterminate')
 
@@ -101,6 +122,9 @@ class Application(tk.Tk):
         # Start the progress bar
         self.progress.start()
         self.progress.grid(row=3, column=0, columnspan=2, sticky='ew')
+        # Disable the buttons
+        self.button.config(state='disabled')
+        self.update_button.config(state='disabled')
         # Start a new thread to run updatedb
         threading.Thread(target=self.run_updatedb, args=(command, password), daemon=True).start()
 
@@ -115,6 +139,9 @@ class Application(tk.Tk):
         # Stop the progress bar
         self.progress.stop()
         self.progress.grid_forget()
+        # Re-enable the buttons
+        self.after(0, lambda: self.button.config(state='normal'))
+        self.after(0, lambda: self.update_button.config(state='normal'))
 
     def sort_by(self, col, descending):
         # Remove the arrow from all columns
