@@ -48,7 +48,7 @@ class Application(tk.Tk):
         self.tree.heading("time", text="Time Modified", command=lambda: self.sort_by("time", False))
         self.tree.column("filename", stretch=tk.YES, width=200)
         self.tree.column("path", stretch=tk.YES, width=300)
-        self.tree.column("time", stretch=tk.YES, width=200)
+        self.tree.column("time", stretch=tk.NO, width=190)
         self.tree.configure(yscrollcommand=self.scrollbar.set)
 
         # Create right click context menu
