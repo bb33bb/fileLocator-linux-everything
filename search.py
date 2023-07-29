@@ -10,6 +10,9 @@ from tkinter import ttk, Menu
 from subprocess import Popen, PIPE
 import subprocess
 import mimetypes
+import shutil
+import urllib.parse
+import tkinter.filedialog
 
 
 def pixels_to_chars(pixels):
@@ -18,6 +21,22 @@ def pixels_to_chars(pixels):
     average_char_width = 10
     return pixels // average_char_width
 
+class MyTreeview(ttk.Treeview):
+    def _button2_released(self, event):
+        column = self.identify_column(event.x)
+        if column:
+            x, y, width, height = self.bbox(self.focus())
+            if 'separator' in self.identify(x, event.y):
+                # User is dragging a column separator
+                # Get the columns and their current widths
+                columns = self.cget('columns')
+                col_widths = [self.column(col, 'width') for col in columns]
+                # Calculate the new width of the current column
+                new_width = max(self.column(column, 'minwidth'), event.x - x)
+                # Set the new width of the current column
+                self.column(column, width=new_width)
+                return 'break'  # prevent the default event handling
+        super()._button2_released(event)
 
 class Application(tk.Tk):
     def __init__(self):
@@ -50,8 +69,7 @@ class Application(tk.Tk):
         self.update_button = tk.Button(self, text="Update Index", command=self.update_index,
                                        width=update_index_button_width)
         # Add "filetype" to the tree columns
-        self.tree = ttk.Treeview(self, columns=("filename", "path", "size", "time", "filetype"), show="headings",
-                                 selectmode='extended')
+        self.tree = MyTreeview(self, columns=("filename", "path", "size", "time", "filetype"), show="headings", selectmode='extended')
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         # Configure treeview
         self.tree.heading("filename", text="Filename", command=lambda: self.sort_by("filename", False))
@@ -61,7 +79,7 @@ class Application(tk.Tk):
         # Add heading for the filetype
         self.tree.heading("filetype", text="File Type", command=lambda: self.sort_by("filetype", False))
 
-        self.tree.column("filename", stretch=tk.YES, width=160)
+        self.tree.column("filename", stretch=tk.NO, width=160)
         self.tree.column("path", stretch=tk.YES, width=300)
         self.tree.column("time", stretch=tk.NO, width=190)
         self.tree.column("size", stretch=tk.NO, width=100)
@@ -79,6 +97,8 @@ class Application(tk.Tk):
         self.menu.add_command(label="Copy Filepath", command=self.copy_filepath)
         self.menu.add_separator()  # Add separator
         self.menu.add_command(label="Delete", command=self.delete_selected)
+        self.menu.add_command(label="CopyFile", command=self.copy_file)
+        self.menu.add_command(label="Move File", command=self.move_file)
 
 
         self.tree.bind("<Button-3>", self.show_menu)
@@ -101,44 +121,71 @@ class Application(tk.Tk):
         # Set focus to the entry widget
         self.entry.focus_set()
 
-    def search_and_prevent_newline(self, event=None):
-        self.search()
-        return 'break'  # prevent the default event handling
     def copy_filename(self):
-        # Get selected items
+        self.copy_to_clipboard(0)
+        
+    def copy_file(self):
         selected_items = self.tree.selection()
         if len(selected_items) > 0:
-            # Initialize filename string
-            filename_str = ''
-            for item in selected_items:
-                # Get file name
-                filename = self.tree.item(item)['values'][0]
-                # Append filename to the string with a newline
-                filename_str += filename + '\n'
-            # Copy to clipboard
-            self.clipboard_clear()
-            self.clipboard_append(filename_str)
+            item = selected_items[0]
+            source_path = self.tree.item(item)['values'][1]
+            # Ask for the destination directory
+            dest_dir = tkinter.filedialog.askdirectory()
+            if not dest_dir:  # If the user cancelled the dialog, dest_dir will be ''
+                return
+            # Construct the full destination path
+            dest_path = os.path.join(dest_dir, os.path.basename(source_path))
+            try:
+                # Copy the file
+                shutil.copy2(source_path, dest_path)
+                tkinter.messagebox.showinfo("Success", "File copied successfully.")
+            except Exception as e:
+                tkinter.messagebox.showerror("Error", "Failed to copy file: " + str(e))
+        else:
+            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
+
+
+    def move_file(self):
+        selected_items = self.tree.selection()
+        if len(selected_items) > 0:
+            item = selected_items[0]
+            source_path = self.tree.item(item)['values'][1]
+            # Ask for the destination directory
+            dest_dir = tkinter.filedialog.askdirectory()
+            if not dest_dir:  # If the user cancelled the dialog, dest_dir will be ''
+                return
+            # Construct the full destination path
+            dest_path = os.path.join(dest_dir, os.path.basename(source_path))
+            try:
+                # Move the file
+                shutil.move(source_path, dest_path)
+                tkinter.messagebox.showinfo("Success", "File moved successfully.")
+                # Remove the item from the treeview
+                self.tree.delete(item)
+            except Exception as e:
+                tkinter.messagebox.showerror("Error", "Failed to move file: " + str(e))
         else:
             tkinter.messagebox.showinfo("No selection", "Please select an item first.")
 
 
     def copy_filepath(self):
-        # Get selected items
+        self.copy_to_clipboard(1)
+
+    def copy_to_clipboard(self, index):
         selected_items = self.tree.selection()
         if len(selected_items) > 0:
-            # Initialize filepath string
-            filepath_str = ''
+            copied_str = ''
             for item in selected_items:
-                # Get file path
-                filepath = self.tree.item(item)['values'][1]
-                # Append filepath to the string with a newline
-                filepath_str += filepath + '\n'
-            # Copy to clipboard
+                copied_str += self.tree.item(item)['values'][index] + '\n'
             self.clipboard_clear()
-            self.clipboard_append(filepath_str)
+            self.clipboard_append(copied_str)
         else:
             tkinter.messagebox.showinfo("No selection", "Please select an item first.")
 
+    def search_and_prevent_newline(self, event=None):
+        self.search()
+        return 'break'  # prevent the default event handling
+    
     def open_file_by_dbl_click(self, event):
         # Get selected item
         selected_items = self.tree.selection()
@@ -226,7 +273,8 @@ class Application(tk.Tk):
         stdout, stderr = process.communicate()
         
         # Filter the results with the other keywords
-        for line in stdout.decode().split("\n"):
+        lines = filter(os.path.exists, stdout.decode().split("\n"))
+        for line in lines:
             print("line:", line)
             if line and os.path.exists(line):
                 if search_path:
