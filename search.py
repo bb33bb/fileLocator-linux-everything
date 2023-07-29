@@ -57,7 +57,7 @@ class Application(tk.Tk):
         self.tree.heading("size", text="Size", command=lambda: self.sort_by("size", False))
         # Add size to the tree columns and headings
 
-        self.tree.column("filename", stretch=tk.YES, width=200)
+        self.tree.column("filename", stretch=tk.YES, width=160)
         self.tree.column("path", stretch=tk.YES, width=300)
         self.tree.column("time", stretch=tk.NO, width=190)
         self.tree.column("size", stretch=tk.NO, width=100)
@@ -65,9 +65,16 @@ class Application(tk.Tk):
         # Create right click context menu
         self.menu = Menu(self, tearoff=0)
         self.menu.bind("<FocusOut>", lambda _: self.menu.unpost())
+
         self.menu.add_command(label="Open Directory", command=self.open_directory)
         self.menu.add_command(label="Open File", command=self.open_file)
+        self.menu.add_separator()  # Add separator
+        self.menu.add_command(label="Copy Filename", command=self.copy_filename)
+        self.menu.add_command(label="Copy Filepath", command=self.copy_filepath)
+        self.menu.add_separator()  # Add separator
         self.menu.add_command(label="Delete", command=self.delete_selected)
+
+
         self.tree.bind("<Button-3>", self.show_menu)
         # Layout
         self.entry.grid(row=0, column=0, sticky='ew', ipadx=4, padx=(0, 2))
@@ -88,6 +95,41 @@ class Application(tk.Tk):
     def search_and_prevent_newline(self, event=None):
         self.search()
         return 'break'  # prevent the default event handling
+    def copy_filename(self):
+        # Get selected items
+        selected_items = self.tree.selection()
+        if len(selected_items) > 0:
+            # Initialize filename string
+            filename_str = ''
+            for item in selected_items:
+                # Get file name
+                filename = self.tree.item(item)['values'][0]
+                # Append filename to the string with a newline
+                filename_str += filename + '\n'
+            # Copy to clipboard
+            self.clipboard_clear()
+            self.clipboard_append(filename_str)
+        else:
+            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
+
+
+    def copy_filepath(self):
+        # Get selected items
+        selected_items = self.tree.selection()
+        if len(selected_items) > 0:
+            # Initialize filepath string
+            filepath_str = ''
+            for item in selected_items:
+                # Get file path
+                filepath = self.tree.item(item)['values'][1]
+                # Append filepath to the string with a newline
+                filepath_str += filepath + '\n'
+            # Copy to clipboard
+            self.clipboard_clear()
+            self.clipboard_append(filepath_str)
+        else:
+            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
+
 
     def undo(self, event=None):
         """Undo the last action."""
