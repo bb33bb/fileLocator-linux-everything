@@ -9,6 +9,7 @@ import tkinter.font as tkFont
 from tkinter import ttk, Menu
 from subprocess import Popen, PIPE
 import subprocess
+import mimetypes
 
 
 def pixels_to_chars(pixels):
@@ -22,7 +23,8 @@ class Application(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("FileLocator")
-        self.sort_directions = {"filename": False, "path": False, "time": False}
+        # Add "filetype" to the sort_directions
+        self.sort_directions = {"filename": False, "path": False, "time": False, "filetype": False}
         # Global variable to track if the menu is shown
         self.menu_shown = False
         # Add a boolean to track if a search is ongoing
@@ -47,7 +49,8 @@ class Application(tk.Tk):
         self.button = tk.Button(self, text="Search", command=self.search, width=search_button_width)
         self.update_button = tk.Button(self, text="Update Index", command=self.update_index,
                                        width=update_index_button_width)
-        self.tree = ttk.Treeview(self, columns=("filename", "path", "size", "time"), show="headings",
+        # Add "filetype" to the tree columns
+        self.tree = ttk.Treeview(self, columns=("filename", "path", "size", "time", "filetype"), show="headings",
                                  selectmode='extended')
         self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         # Configure treeview
@@ -55,12 +58,15 @@ class Application(tk.Tk):
         self.tree.heading("path", text="Full Path", command=lambda: self.sort_by("path", False))
         self.tree.heading("time", text="Time Modified", command=lambda: self.sort_by("time", False))
         self.tree.heading("size", text="Size", command=lambda: self.sort_by("size", False))
-        # Add size to the tree columns and headings
+        # Add heading for the filetype
+        self.tree.heading("filetype", text="File Type", command=lambda: self.sort_by("filetype", False))
 
         self.tree.column("filename", stretch=tk.YES, width=160)
         self.tree.column("path", stretch=tk.YES, width=300)
         self.tree.column("time", stretch=tk.NO, width=190)
         self.tree.column("size", stretch=tk.NO, width=100)
+        # Set the width for the filetype
+        self.tree.column("filetype", stretch=tk.NO, width=180)
         self.tree.configure(yscrollcommand=self.scrollbar.set)
         # Create right click context menu
         self.menu = Menu(self, tearoff=0)
@@ -76,6 +82,8 @@ class Application(tk.Tk):
 
 
         self.tree.bind("<Button-3>", self.show_menu)
+        # Bind double click event
+        self.tree.bind("<Double-Button-1>", self.open_file_by_dbl_click)
         # Layout
         self.entry.grid(row=0, column=0, sticky='ew', ipadx=4, padx=(0, 2))
         self.button.grid(row=0, column=1, sticky='ew', ipadx=4, padx=(2, 2))
@@ -92,6 +100,7 @@ class Application(tk.Tk):
         self.progress = ttk.Progressbar(self, mode='indeterminate')
         # Set focus to the entry widget
         self.entry.focus_set()
+
     def search_and_prevent_newline(self, event=None):
         self.search()
         return 'break'  # prevent the default event handling
@@ -130,7 +139,18 @@ class Application(tk.Tk):
         else:
             tkinter.messagebox.showinfo("No selection", "Please select an item first.")
 
-
+    def open_file_by_dbl_click(self, event):
+        # Get selected item
+        selected_items = self.tree.selection()
+        if len(selected_items) > 0:
+            item = selected_items[0]
+            # Get file path
+            path = self.tree.item(item)['values'][1]
+            # Open the file
+            subprocess.run(['xdg-open', path])
+        else:
+            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
+            
     def undo(self, event=None):
         """Undo the last action."""
         try:
@@ -219,7 +239,9 @@ class Application(tk.Tk):
                     # Get the size of the file
                     size = os.path.getsize(line)
                     readable_size = self.human_readable_size(size)
-                    self.tree.insert("", "end", values=(os.path.basename(line), line, readable_size, readable_time))
+                    # Get the file type and add it to the tree
+                    file_type = mimetypes.guess_type(line)[0] or "unknown"
+                    self.tree.insert("", "end", values=(os.path.basename(line), line, readable_size, readable_time, file_type))
 
         # When the search is done, re-enable the button and set the searching boolean to False
         self.after(0, lambda: self.button.config(state='normal'))
@@ -264,8 +286,12 @@ class Application(tk.Tk):
         if col == "size":
             # Convert the size strings back to bytes for sorting
             data = [(self.string_to_bytes(self.tree.set(child, col)), child) for child in self.tree.get_children('')]
+                # Handle the filetype column similarly to the other columns
+        elif col == "filetype":
+            data = [(self.tree.set(child, col), child) for child in self.tree.get_children('')]
         else:
             data = [(self.tree.set(child, col), child) for child in self.tree.get_children('')]
+
         # Sort the treeview by the given column
         data = [(self.tree.set(child, col), child) for child in self.tree.get_children('')]
         data.sort(reverse=descending)
