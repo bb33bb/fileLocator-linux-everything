@@ -1,7 +1,8 @@
 # search-file
 gui of locate command
 
-![Screenshot from 2023-07-25 19-58-12](https://github.com/bb33bb/search-file/assets/5463104/330c6fc0-508e-4555-b18a-cbed9edee5dd)
+![Screenshot from 2023-08-03 13-53-06](https://github.com/bb33bb/fileLocator-linux-everything/assets/5463104/b6fda58b-1874-4079-89f7-a7fc5c174845)
+
 
 all of the code are written by gpt4
 
