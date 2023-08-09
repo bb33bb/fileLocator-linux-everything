@@ -1,477 +1,248 @@
 #!/usr/bin/python3
-import fcntl
-import sys
-import os
-import errno
-import time
 import threading
-import tkinter as tk
-import tkinter.messagebox
-import tkinter.simpledialog
-import tkinter.font as tkFont
-from tkinter import ttk, Menu
-from subprocess import Popen, PIPE
 import subprocess
-import mimetypes
-import shutil
-import urllib.parse
-import tkinter.filedialog
+import os
+import sys
 import datetime
+import mimetypes
+from getpass import getpass
+from subprocess import Popen, PIPE
+from threading import Thread
+from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
+                             QWidget, QLineEdit, QPushButton, QTableWidget,
+                             QMessageBox, QTableWidgetItem, QMenu, QAction,
+                             QInputDialog, QDesktopWidget, QHeaderView)
 
-# Try to get a file lock
-try:
-    lockfile = open(os.path.realpath(__file__), 'r')
-    fcntl.flock(lockfile, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except IOError as e:
-    if e.errno == errno.EAGAIN:
-        sys.stderr.write("Another instance is already running, quitting.\n")
-        sys.exit(-1)
-    raise
+class MyTableWidgetItem(QTableWidgetItem):
+    def __lt__(self, other):
+        if (isinstance(other, QTableWidgetItem)):
+            my_value = self.data(Qt.UserRole)
+            other_value = other.data(Qt.UserRole)
 
-def pixels_to_chars(pixels):
-    # This is an estimate of the width of a single character.
-    # You may need to adjust this value for your specific font and size.
-    average_char_width = 10
-    return pixels // average_char_width
+            if (my_value is not None and other_value is not None):
+                return my_value < other_value
 
-class MyTreeview(ttk.Treeview):
-    def _button2_released(self, event):
-        column = self.identify_column(event.x)
-        if column:
-            x, y, width, height = self.bbox(self.focus())
-            if 'separator' in self.identify(x, event.y):
-                # User is dragging a column separator
-                # Get the columns and their current widths
-                columns = self.cget('columns')
-                col_widths = [self.column(col, 'width') for col in columns]
-                # Calculate the new width of the current column
-                new_width = max(self.column(column, 'minwidth'), event.x - x)
-                # Set the new width of the current column
-                self.column(column, width=new_width)
-                return 'break'  # prevent the default event handling
-        super()._button2_released(event)
+        return super(MyTableWidgetItem, self).__lt__(other)
 
-class Application(tk.Tk):
+class MyTableWidget(QTableWidget):
+    def __init__(self, rows, columns, parent=None):
+        super().__init__(rows, columns, parent)
+
+    def lessThan(self, item1, item2):
+        column = self.sortColumn()
+        if column in [2, 3]:  # columns "Size" and "Time"
+            return item1.data(Qt.UserRole) < item2.data(Qt.UserRole)
+        else:
+            return super().lessThan(item1, item2)
+
+class MainWindow(QMainWindow):
+    update_finished = pyqtSignal()  # New signal
     def __init__(self):
         super().__init__()
-        self.title("FileLocator")
-        # Add "filetype" to the sort_directions
-        self.sort_directions = {"filename": False, "path": False, "time": False, "filetype": False}
-        # Global variable to track if the menu is shown
-        self.menu_shown = False
-        # Add a boolean to track if a search is ongoing
+        widget = QWidget(self)
         self.searching = False
-        self.geometry('800x600')  # Set the initial size to 800x600 pixels
-        self.input_history = []
-        self.history_menu = Menu(self, tearoff=0)
-        # Create widgets
-        self.entry = tk.Text(self, height=1, undo=True)
-        self.entry.bind("<Control-a>", self.select_all)
-        self.entry.bind("<Control-v>", self.paste)
-        self.entry.bind("<Control-z>", self.undo)
-        self.entry.bind("<Return>", self.search_and_prevent_newline)
-        self.entry.bind("<FocusIn>", self.focus_in)  # Bind FocusIn event to focus_in function
+        self.selected_item = None  # Set initial value
+        self.layout = QVBoxLayout(widget)
+        self.setCentralWidget(widget)
 
-        # Define a font
-        self.font = tkFont.Font(family="Helvetica", size=10)
-        # Measure the width of the button text and convert it to characters
-        search_button_width = pixels_to_chars(self.font.measure("Search"))
-        update_index_button_width = pixels_to_chars(self.font.measure("Update Index"))
-        # Create the buttons with the measured width
-        self.button = tk.Button(self, text="Search", command=self.search, width=search_button_width)
-        self.update_button = tk.Button(self, text="Update Index", command=self.update_index,
-                                       width=update_index_button_width)
-        # Add "filetype" to the tree columns
-        self.tree = MyTreeview(self, columns=("filename", "path", "size", "time", "filetype"), show="headings", selectmode='extended')
-        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        # Configure treeview
-        self.tree.heading("filename", text="Filename", command=lambda: self.sort_by("filename", False))
-        self.tree.heading("path", text="Full Path", command=lambda: self.sort_by("path", False))
-        self.tree.heading("time", text="Time Modified", command=lambda: self.sort_by("time", False))
-        self.tree.heading("size", text="Size", command=lambda: self.sort_by("size", False))
-        # Add heading for the filetype
-        self.tree.heading("filetype", text="File Type", command=lambda: self.sort_by("filetype", False))
+        self.search_layout = QHBoxLayout()
+        self.layout.addLayout(self.search_layout)
+        
+        self.line_edit = QLineEdit(self)
+        self.search_layout.addWidget(self.line_edit)
+        # ... Existing code ...
+        self.update_finished.connect(self.enable_update_button)  # Connect the signal to a slot
 
-        self.tree.column("filename", stretch=tk.NO, width=160)
-        self.tree.column("path", stretch=tk.NO, width=300)
-        self.tree.column("time", stretch=tk.NO, width=190)
-        self.tree.column("size", stretch=tk.NO, width=100)
-        # Set the width for the filetype
-        self.tree.column("filetype", stretch=tk.YES, width=180)
-        self.tree.configure(yscrollcommand=self.scrollbar.set)
-        # Create right click context menu
-        self.menu = Menu(self, tearoff=0)
-        self.menu.bind("<FocusOut>", lambda _: self.menu.unpost())
+        self.search_button = QPushButton('Search', self)
+        self.search_button.clicked.connect(self.search_clicked)
+        self.search_layout.addWidget(self.search_button)
 
-        self.menu.add_command(label="Open Directory", command=self.open_directory)
-        self.menu.add_command(label="Open File", command=self.open_file)
-        self.menu.add_separator()  # Add separator
-        self.menu.add_command(label="Copy Filename", command=self.copy_filename)
-        self.menu.add_command(label="Copy Filepath", command=self.copy_filepath)
-        self.menu.add_separator()  # Add separator
-        self.menu.add_command(label="Delete", command=self.delete_selected)
-        self.menu.add_command(label="CopyFile", command=self.copy_file)
-        self.menu.add_command(label="Move File", command=self.move_file)
-        # 绑定窗口大小更改事件
-        self.bind("<Configure>", self.resize_columns)
+        self.update_index_button = QPushButton('Update Index', self)
+        self.update_index_button.clicked.connect(self.update_index_clicked)
+        self.search_layout.addWidget(self.update_index_button)
 
-        self.tree.bind("<Button-3>", self.show_menu)
-        # Bind double click event
-        self.tree.bind("<Double-Button-1>", self.open_file_by_dbl_click)
-        # Layout
-        self.entry.grid(row=0, column=0, sticky='ew', ipadx=4, padx=(0, 2))
-        self.button.grid(row=0, column=1, sticky='ew', ipadx=4, padx=(2, 2))
-        self.update_button.grid(row=0, column=2, sticky='ew', ipadx=4, padx=(2, 0))
-        self.tree.grid(row=1, column=0, columnspan=3, sticky='nsew', padx=0, pady=0)
-        self.scrollbar.grid(row=1, column=4, sticky='ns', padx=0)
-        # Configure column weights for resizing
-        self.grid_columnconfigure(0, weight=1)  # Give the Entry widget's column a weight
-        self.grid_columnconfigure(1, weight=0)  # Set the button's column weight to 0
-        self.grid_columnconfigure(2, weight=0)  # Set the update_button's column weight to 0
-        self.grid_columnconfigure(4, weight=0)  # Set the scrollbar's column weight to 0
-        self.grid_rowconfigure(1, weight=1)  # Give the Treeview widget's row a weight
-        # Create progress bar
-        self.progress = ttk.Progressbar(self, mode='indeterminate')
-        # Set focus to the entry widget
-        self.entry.focus_set()
-    def resize_columns(self, event=None):
-        total_width = self.tree.winfo_width()  # 获取树视图的总宽度
-        # 减去滚动条的宽度以获取可用宽度
-        scrollbar_width = self.scrollbar.winfo_width()
-        usable_width = total_width - scrollbar_width
+        # Create QTableWidget
+        self.table_widget = MyTableWidget(0, 5, self)
+        self.table_widget.setHorizontalHeaderLabels(['Filename', 'Path', 'Size', 'Time', 'Filetype'])
 
-        # 您可以根据需要调整各列的宽度百分比
-        col_widths = {
-            "filename": usable_width * 0.2,  # 20%
-            "path": usable_width * 0.4,      # 40%
-            "time": usable_width * 0.2,      # 20%
-            "size": usable_width * 0.1,      # 10%
-            "filetype": usable_width * 0.1   # 10%
-        }
-        # 设置各列的宽度
-        for col_name, width in col_widths.items():
-            self.tree.column(col_name, width=int(width))
-                
+        # Set column width
+        self.table_widget.setColumnWidth(0, 160)  # Filename
+        self.table_widget.setColumnWidth(1, 300)  # Path
+        self.table_widget.setColumnWidth(2, 100)  # Time
+        self.table_widget.setColumnWidth(3, 190)  # Size  
+        # Set the stretch for the filetype
+        self.table_widget.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+
+        self.layout.addWidget(self.table_widget)
+        self.table_widget.itemSelectionChanged.connect(self.handle_item_selection_changed)
+        self.table_widget.itemDoubleClicked.connect(self.open_file_double_click)
+        self.line_edit.returnPressed.connect(self.search_clicked)  # Create a signal for enter key press in lineEdit
+        self.line_edit.setFocus()  # Put the focus on the lineEdit
+                # Enable Sorting
+        self.table_widget.setSortingEnabled(True)
+        self.updateGeometry()
+        # Get the geometry of the screen
+        screen = QDesktopWidget().screenGeometry()
+
+        # Calculate the center point of the screen
+        center_point = screen.center()
+
+        # Move the center point of the window to the center point of the screen
+        self.move(center_point.x() - self.width() // 2, center_point.y() - self.height() // 2)
+
+    def open_file_double_click(self, item):
+        self.table_widget.selectRow(item.row())  # Select the row of the double-clicked item
+        self.open_file()  # Call the open_file method
+
+    def enable_update_button(self):
+        self.update_index_button.setEnabled(True)
+    def contextMenuEvent(self, event):
+        context_menu = QMenu(self)
+
+        open_dir_action = QAction("Open Directory", self)
+        open_file_action = QAction("Open File", self)
+        copy_filename_action = QAction("Copy Filename", self)
+        copy_filepath_action = QAction("Copy Filepath", self)
+        delete_selected_action = QAction("Delete", self)
+
+        # connect actions to the functions
+        open_dir_action.triggered.connect(self.open_directory)
+        open_file_action.triggered.connect(self.open_file)
+        copy_filename_action.triggered.connect(self.copy_filename)
+        copy_filepath_action.triggered.connect(self.copy_filepath)
+        delete_selected_action.triggered.connect(self.delete_selected)
+
+        context_menu.addAction(open_dir_action)
+        context_menu.addAction(open_file_action)
+        context_menu.addSeparator()
+        context_menu.addAction(copy_filename_action)
+        context_menu.addAction(copy_filepath_action)
+        context_menu.addSeparator()
+        context_menu.addAction(delete_selected_action)
+        
+        context_menu.exec_(event.globalPos())
+
+    def handle_item_selection_changed(self):
+        self.selected_item = self.table_widget.currentItem()
+
+    def open_directory(self):
+        if self.selected_item:
+            row = self.selected_item.row()
+            item = self.table_widget.item(row, 1)
+            if item:
+                path = item.text()
+                if os.path.isdir(path):
+                    subprocess.run(['nautilus', path])
+                else:
+                    subprocess.run(['nautilus', '--select', path])
+            else:
+                QMessageBox.information(self, "Invalid path", "The selected item does not have a valid path.")
+        else:
+            QMessageBox.information(self, "No selection", "Please select an item first.")
+
+    def open_file(self):
+        if self.selected_item:
+            row = self.selected_item.row()
+            item = self.table_widget.item(row, 1)
+            if item:
+                path = item.text()
+                if os.path.exists(path):  # It's necessary to check whether the file path exists.
+                    subprocess.run(['xdg-open', path])
+            else:
+                QMessageBox.information(self, "Invalid path", "The selected item does not have a valid path.")
+        else:
+            QMessageBox.information(self, "No selection", "Please select an item first.")
+
+    def sort_by(self, col, descending):
+        if col == "time":
+            self.table_widget.sortItems(2, Qt.DescendingOrder if descending else Qt.AscendingOrder)
+            
+        elif col == "size":
+            self.table_widget.sortItems(3, Qt.DescendingOrder if descending else Qt.AscendingOrder)
+
     def copy_filename(self):
         self.copy_to_clipboard(0)
-
-    def copy_file(self):
-        selected_items = self.tree.selection()
-        if len(selected_items) > 0:
-            item = selected_items[0]
-            source_path = self.tree.item(item)['values'][1]
-            # Ask for the destination directory
-            dest_dir = tkinter.filedialog.askdirectory()
-            if not dest_dir:  # If the user cancelled the dialog, dest_dir will be ''
-                return
-            # Construct the full destination path
-            dest_path = os.path.join(dest_dir, os.path.basename(source_path))
-            try:
-                # Copy the file
-                shutil.copy2(source_path, dest_path)
-                tkinter.messagebox.showinfo("Success", "File copied successfully.")
-            except Exception as e:
-                tkinter.messagebox.showerror("Error", "Failed to copy file: " + str(e))
-        else:
-            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
-
-
-    def move_file(self):
-        selected_items = self.tree.selection()
-        if len(selected_items) > 0:
-            item = selected_items[0]
-            source_path = self.tree.item(item)['values'][1]
-            # Ask for the destination directory
-            dest_dir = tkinter.filedialog.askdirectory()
-            if not dest_dir:  # If the user cancelled the dialog, dest_dir will be ''
-                return
-            # Construct the full destination path
-            dest_path = os.path.join(dest_dir, os.path.basename(source_path))
-            try:
-                # Move the file
-                shutil.move(source_path, dest_path)
-                tkinter.messagebox.showinfo("Success", "File moved successfully.")
-                # Remove the item from the treeview
-                self.tree.delete(item)
-            except Exception as e:
-                tkinter.messagebox.showerror("Error", "Failed to move file: " + str(e))
-        else:
-            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
-
 
     def copy_filepath(self):
         self.copy_to_clipboard(1)
 
     def copy_to_clipboard(self, index):
-        selected_items = self.tree.selection()
+        selected_items = self.table_widget.selectedItems()
         if len(selected_items) > 0:
             copied_str = ''
             for item in selected_items:
-                copied_str += self.tree.item(item)['values'][index] + '\n'
-            self.clipboard_clear()
-            self.clipboard_append(copied_str)
+                row = item.row()
+                item = self.table_widget.item(row, index)
+                if item:
+                    copied_str += item.text() + '\n'
+            QApplication.clipboard().setText(copied_str)
         else:
-            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
+            QMessageBox.information(self, "No selection", "Please select an item first.")
 
-    def search_and_prevent_newline(self, event=None):
-        self.search()
-        return 'break'  # prevent the default event handling
-    
-    def open_file_by_dbl_click(self, event):
-        # Get selected item
-        selected_items = self.tree.selection()
+    def updateGeometry(self):
+        total_width, total_height = self.calculateSize()
+        # Add a little offset
+        total_width += 20
+        # total_height += 100      
+        total_height=600  
+        self.resize(total_width, total_height)
+
+    def calculateSize(self):
+        total_width = self.table_widget.verticalHeader().width()
+        for i in range(self.table_widget.columnCount()):
+            total_width += self.table_widget.columnWidth(i)
+
+        total_height = self.table_widget.horizontalHeader().height()
+        for i in range(self.table_widget.rowCount()):
+            total_height += self.table_widget.rowHeight(i)
+        return total_width, total_height
+
+    def update_index_clicked(self):
+        # Ask for password
+        password, ok = QInputDialog.getText(self, 'Password', 'Enter password:', QLineEdit.Password)
+        if ok:
+            command = ['sudo', '-S', 'updatedb']
+            Thread(target=self.run_updatedb, args=(command, password, self.update_finished), daemon=True).start()
+        # 禁用按钮
+        self.update_index_button.setEnabled(False)
+
+    def delete_selected(self):
+        selected_items = self.table_widget.selectedItems()
         if len(selected_items) > 0:
-            item = selected_items[0]
-            # Get file path
-            path = self.tree.item(item)['values'][1]
-            # Open the file
-            subprocess.run(['xdg-open', path])
+            confirm_msg_box = QMessageBox(self)
+            confirm_msg_box.setWindowTitle("Confirm deletion")
+            confirm_msg_box.setText("Are you sure you want to delete the selected files?")
+            confirm_msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+            response = confirm_msg_box.exec_()
+            if response != QMessageBox.Yes:
+                return
+            for item in selected_items:
+                row = item.row()
+                item = self.table_widget.item(row, 1)
+                if item:
+                    path = item.text()
+                    try:
+                        if os.path.isfile(path):
+                            os.remove(path)
+                        elif os.path.isdir(path):
+                            os.rmdir(path)  # This will only remove empty directories
+                        self.table_widget.removeRow(row)
+                    except OSError as e:
+                        QMessageBox.critical(self, "Error", "Failed to delete file: " + str(e))
         else:
-            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
+            QMessageBox.information(self, "No selection", "Please select an item first.")
             
-    def undo(self, event=None):
-        """Undo the last action."""
-        try:
-            self.entry.edit_undo()
-        except tk.TclError:
-            pass  # nothing to undo
-        return 'break'  # prevent the default event handling
-
-    def select_all(self, event=None):
-        """Select all text in the entry."""
-        self.entry.tag_add(tk.SEL, "1.0", tk.END)
-        self.entry.mark_set(tk.INSERT, "1.0")
-        self.entry.see(tk.INSERT)
-        return 'break'  # prevent the default event handling
-
-    def paste(self, event=None):
-        """Paste clipboard content into the entry, replacing any selected text."""
-        # first, clear any selected text
-        try:
-            start = self.entry.index(tk.SEL_FIRST)
-            end = self.entry.index(tk.SEL_LAST)
-            self.entry.delete(start, end)
-        except tk.TclError:
-            pass  # nothing was selected, so there's nothing to delete
-        # then, paste the clipboard content
-        self.entry.insert(tk.INSERT, self.clipboard_get())
-        return 'break'  # prevent the default event handling
-
-
-    def search(self, event=None):
-        # Release the input focus
-        if self.menu_shown:
-            self.menu.unpost()
-            self.menu_shown = False
-        # Check if the entry is empty
-        filename = self.entry.get("1.0", tk.END).strip()
-        if not filename:
-            return
-        # Update the input history
-        if filename in self.input_history:
-            self.input_history.remove(filename)  # Remove the old entry
-        self.input_history.append(filename)  # Add the new entry at the end
-        if len(self.input_history) > 10:
-            self.input_history.pop(0)  # Keep only the last 10 entries
-        # Disable the button and set the searching boolean to True
-        self.button.config(state='disabled')
-        self.searching = True
-        # Start a new thread to search
-        threading.Thread(target=self.do_search, daemon=True).start()
-
-    def do_search(self):
-        # Clear old results
-        for i in self.tree.get_children():
-            self.tree.delete(i)
-
-        # Get the filename from the entry
-        filename = self.entry.get("1.0", tk.END).strip()
-
-        # Determine if the filename is enclosed by double quotes for exact match
-        exact_match = False
-        if filename.startswith('"') and filename.endswith('"'):
-            filename = filename[1:-1]  # Remove the double quotes
-            exact_match = True
-
-        # Split the filename into keywords if it contains spaces
-        keywords = filename.split()
-
-        # Take the first keyword for searching
-        keyword = keywords[0]
-        # Determine if we should search by path or just filename
-        search_path = '/' in keyword
-        if search_path:
-            command = ['locate', '-i', keyword]
-        else:
-            command = ['locate', '-i', '-b', keyword]
-
-        # Run the locate command
-        process = Popen(command, stdout=PIPE, stderr=PIPE)
-        stdout, stderr = process.communicate()
-
-        # Filter the results with the other keywords
-        lines = filter(os.path.exists, stdout.decode().split("\n"))
-        for line in lines:
-            if line and os.path.exists(line):
-                if search_path:
-                    match_string = line
-                else:
-                    match_string = os.path.basename(line)
-                if all(kw.lower() in match_string.lower() for kw in keywords[1:]):
-                    if exact_match and match_string != filename:
-                        continue  # Skip the file if it doesn't exactly match the filename
-                    timestamp = os.path.getmtime(line)
-                    readable_time = datetime.datetime.fromtimestamp(timestamp).isoformat()
-                    # Get the size of the file
-                    size = os.path.getsize(line)
-                    readable_size = self.human_readable_size(size)
-                    # Get the file type and add it to the tree
-                    file_type = mimetypes.guess_type(line)[0] or "unknown"
-                    self.tree.insert("", "end", values=(os.path.basename(line), line, readable_size, readable_time, file_type))
-
-        # When the search is done, re-enable the button and set the searching boolean to False
-        self.after(0, lambda: self.button.config(state='normal'))
-        self.searching = False
-
-
-
-    def update_index(self):
-        password = tkinter.simpledialog.askstring("Password", "Enter password:", show='*')
-        if password is None:
-            return
-        command = ['sudo', '-S', 'updatedb']
-        # Start the progress bar
-        self.progress.start()
-        self.progress.grid(row=3, column=0, columnspan=2, sticky='ew')
-        # Disable the buttons
-        self.button.config(state='disabled')
-        self.update_button.config(state='disabled')
-        # Start a new thread to run updatedb
-        threading.Thread(target=self.run_updatedb, args=(command, password), daemon=True).start()
-
-    def run_updatedb(self, command, password):
+    def run_updatedb(command, password, signal):
         proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         proc.stdin.write(password.encode())
         stdout, stderr = proc.communicate()
         if proc.returncode != 0:
-            tkinter.messagebox.showerror("Error", "Failed to update index. Error: " + stderr.decode())
+            print("Failed to update index. Error: " + stderr.decode())  # You can replace this with a PyQt5 messagebox
         else:
-            tkinter.messagebox.showinfo("Success", "Index updated successfully.")
-        # Stop the progress bar
-        self.progress.stop()
-        self.progress.grid_forget()
-        # Re-enable the buttons
-        self.after(0, lambda: self.button.config(state='normal'))
-        self.after(0, lambda: self.update_button.config(state='normal'))
+            print("Index updated successfully.")  # You can replace this with a PyQt5 messagebox
+        signal.emit()  # Emit the signal when the method is done
 
-    def sort_by(self, col, descending):
-        # Remove the arrow from all columns
-        for col_name in self.sort_directions.keys():
-            col_heading = self.tree.heading(col_name, option="text")
-            self.tree.heading(col_name, text=col_heading.replace(" ↑", "").replace(" ↓", ""))
-
-        # Sort by "time"
-        if col == "time":
-            data = [(datetime.datetime.fromisoformat(self.tree.set(child, col)).timestamp(), child) for child in self.tree.get_children('')]
-        # Handle the size column differently
-        elif col == "size":
-            # Convert the size strings back to bytes for sorting
-            data = [(self.string_to_bytes(self.tree.set(child, col)), child) for child in self.tree.get_children('')]
-        # Handle the filetype column similarly to the other columns
-        elif col == "filetype":
-            data = [(self.tree.set(child, col), child) for child in self.tree.get_children('')]
-        else:
-            data = [(self.tree.set(child, col), child) for child in self.tree.get_children('')]
-
-        # Sort the data
-        data.sort(reverse=descending)
-        for indx, item in enumerate(data):
-            self.tree.move(item[1], '', indx)
-
-        # Switch the heading so that it will sort in the opposite direction
-        self.tree.heading(col, command=lambda col=col: self.sort_by(col, int(not descending)))
-
-        # Add the arrow to the sorted column
-        col_heading = self.tree.heading(col, option="text")
-        if descending:
-            self.tree.heading(col, text=col_heading + " ↓")
-        else:
-            self.tree.heading(col, text=col_heading + " ↑")
-
-        self.sort_directions[col] = descending
-
-    def show_menu(self, event):
-        # Select row under mouse
-        item = self.tree.identify_row(event.y)
-        if item not in self.tree.selection():
-            self.tree.selection_set(item)
-        # Show right click context menu
-        self.menu.post(event.x_root, event.y_root)
-        # Set the focus to the menu
-        self.menu.focus_set()
-        # Set the global variable to True
-        self.menu_shown = True
-
-    def open_directory(self):
-        # Get selected item
-        selected_items = self.tree.selection()
-        if len(selected_items) > 0:
-            item = selected_items[0]
-            # Get file path
-            path = self.tree.item(item)['values'][1]
-            # Check if the path is a directory
-            if os.path.isdir(path):
-                # Open the directory
-                subprocess.run(['nautilus', path])
-            else:
-                # Open the directory containing the file and select the file
-                subprocess.run(['nautilus', '--select', path])
-        else:
-            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
-
-    def open_file(self):
-        # Get selected item
-        selected_items = self.tree.selection()
-        if len(selected_items) > 0:
-            item = selected_items[0]
-            # Get file path
-            path = self.tree.item(item)['values'][1]
-            # Open the file
-            subprocess.run(['xdg-open', path])
-        else:
-            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
-
-    def delete_selected(self):
-        # Get selected items
-        selected_items = self.tree.selection()
-        if len(selected_items) > 0:
-            # Show a confirmation dialog
-            if not tkinter.messagebox.askyesno("Confirm deletion",
-                                               "Are you sure you want to delete the selected files?"):
-                return
-            for item in selected_items:
-                # Get file path
-                path = self.tree.item(item)['values'][1]
-                # Delete the file
-                try:
-                    if os.path.isfile(path):
-                        os.remove(path)
-                    elif os.path.isdir(path):
-                        os.rmdir(path)  # This will only remove empty directories
-                    # Remove the item from the treeview
-                    self.tree.delete(item)
-                except OSError as e:
-                    tkinter.messagebox.showerror("Error", "Failed to delete file: " + str(e))
-        else:
-            tkinter.messagebox.showinfo("No selection", "Please select an item first.")
-
-    def focus_in(self, event):
-        # Check the global variable
-        if self.menu_shown:
-            # Unpost the menu
-            self.menu.unpost()
-            # Set the global variable to False
-            self.menu_shown = False
 
     def human_readable_size(self, size):
         # Convert bytes to a human readable string
@@ -482,21 +253,102 @@ class Application(tk.Tk):
             unit += 1
         return f"{size:.1f} {units[unit]}"
 
-    def string_to_bytes(self, size_string):
-        # Convert a human readable string back to bytes
-        size, unit = size_string.split()
-        size = float(size)
-        units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
-        unit = units.index(unit)
-        while unit > 0:
-            size *= 1024
-            unit -= 1
-        return size
+    def _search_files(self):
+        try:
+            filename = self.line_edit.text().strip()
+            if not filename:
+                return
+            
+            exact_match = False
+            if filename.startswith('"') and filename.endswith('"'):
+                filename = filename[1:-1]
+                exact_match = True
 
+            keywords = filename.split()
 
-if __name__ == "__main__":
-    app = Application()
-    app.mainloop()
+            longest_keyword = max(keywords, key=len)
+            search_path = '/' in filename
+            if search_path:
+                command = ['locate', '-i', longest_keyword]
+            else:
+                command = ['locate', '-i', '-b', longest_keyword]
 
-# Release the file lock
-fcntl.flock(lockfile, fcntl.LOCK_UN)
+            process = Popen(command, stdout=PIPE, stderr=PIPE)
+            stdout, stderr = process.communicate()
+
+            lines = filter(os.path.exists, stdout.decode().split("\n"))
+            for line in lines:
+                if line and os.path.exists(line):
+                    if search_path:
+                        match_string = line
+                    else:
+                        match_string = os.path.basename(line)
+                    # print("match_string:", match_string)
+                    # print("keywords:", keywords)
+                    # for kw in keywords:
+                    #     print(f"'{kw.lower()}' in '{match_string.lower()}' is {kw.lower() in match_string.lower()}")
+                    if not all(kw.lower() in match_string.lower() for kw in keywords):
+                        continue
+                    if exact_match and match_string != filename:
+                        continue
+                    size_in_bytes = os.path.getsize(line)
+                    timestamp = os.path.getmtime(line)
+                    readable_time = datetime.datetime.fromtimestamp(timestamp).isoformat()
+                    readable_size = self.human_readable_size(size_in_bytes)
+
+                    # Add the information to the table widget
+                    row_position = self.table_widget.rowCount()
+                    self.table_widget.insertRow(row_position)
+                    # Extract the filename from the path
+                    filename = os.path.basename(line)
+                    # Create a QTableWidgetItem for the filename and add it to the table
+                    name_item = MyTableWidgetItem(filename)
+                    name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)  # Disable editing
+                    self.table_widget.setItem(row_position, 0, name_item)
+
+                    # 其他的列（如文件名、路径、文件类型）可以照旧处理
+                    # self.table_widget.setItem(row_position, 0, QTableWidgetItem(os.path.basename(line)))
+                    self.table_widget.setItem(row_position, 1, QTableWidgetItem(line))
+
+                    # Create the QTableWidgetItem with MyTableWidgetItem
+                    size_item = MyTableWidgetItem(readable_size)
+                    size_item.setData(Qt.UserRole, size_in_bytes)
+                    size_item.setFlags(size_item.flags() & ~Qt.ItemIsEditable)  # Disable editing
+                    self.table_widget.setItem(row_position, 2, size_item)
+                    time_item = QTableWidgetItem(readable_time)
+                    time_item.setData(Qt.UserRole, timestamp)
+                    self.table_widget.setItem(row_position, 3, time_item)
+
+                    # Guess the file type
+                    file_type, _ = mimetypes.guess_type(line)
+                    if file_type is None:
+                        file_type = "Unknown"
+
+                    self.table_widget.setItem(row_position, 4, QTableWidgetItem(file_type))
+        finally:
+            self.searching = False
+            # Enable sorting after adding data
+            self.table_widget.setSortingEnabled(True)
+
+    def search_clicked(self):
+        # If already searching, don't start another search
+        if self.searching:
+            return
+        # Disable sorting before adding data
+        self.table_widget.setSortingEnabled(False)
+        self.table_widget.setRowCount(0)
+        self.searching = True
+
+        # Start search in a new thread
+        search_thread = threading.Thread(target=self._search_files)
+        search_thread.start()
+
+        
+
+def update_index_button(self):
+    QMessageBox.information(self, '', 'Update Index button clicked.')
+
+app = QApplication(sys.argv)
+main_window = MainWindow()
+main_window.show()
+sys.exit(app.exec_())
